@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 
-const API_URL = '/api';
+const API_URL = window.location.hostname.includes('railway.app')
+  ? '/api'
+  : 'https://lancamento-production.up.railway.app/api';
 
 import {
   Plus, Trash2, FileText, ChevronDown, ChevronUp, Save,
