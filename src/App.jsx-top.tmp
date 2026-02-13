@@ -1,0 +1,41 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { initializeApp } from "firebase/app";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged
+} from "firebase/auth";
+
+const API_URL = '/api';
+
+import {
+  Plus, Trash2, FileText, ChevronDown, ChevronUp, Save,
+  Paperclip, X, CheckCircle2, AlertCircle, Banknote, Receipt,
+  FolderOpen, DollarSign, Eye, Edit, Search,
+  ArrowUpDown, Lock, LogOut, UserCog, History, ExternalLink,
+  Download, FileSpreadsheet, File as FileIcon, FileType,
+  Undo2, Filter, Calendar, Menu
+} from 'lucide-react';
+
+// --- CONFIGURAÇÃO FIREBASE ---
+const firebaseConfig = {
+  apiKey: "AIzaSyAjnXQyLpPr9N959RJu-m33eJQiTVI6wA4",
+  authDomain: "controle-de-notas-8d0ba.firebaseapp.com",
+  projectId: "controle-de-notas-8d0ba",
+  storageBucket: "controle-de-notas-8d0ba.appspot.com",
+  messagingSenderId: "832409792798",
+  appId: "1:832409792798:web:3ae6f15a0bbbb07870d90f"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+const appId = "lma-finance";
+
+// --- CONFIGURAÇÕES DE ARQUIVO ---
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const ALLOWED_FILE_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+const ALLOWED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.xlsx'];
+
+const MASTER_USER = 'filipe.souza@shipstore.com.br';
