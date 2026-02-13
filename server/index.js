@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import pool from './db.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
@@ -11,6 +13,11 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3001;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+app.use(express.static(path.join(__dirname, '../dist')));
 
 // --- AUTHENTICATION ---
 app.post('/api/auth/login', async (req, res) => {
@@ -320,4 +327,9 @@ app.get('/api/files/:id/chunks', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+});
+
+// Fallback to index.html for SPA routing
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../dist/index.html'));
 });
