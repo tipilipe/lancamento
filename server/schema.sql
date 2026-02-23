@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS items (
     data JSONB NOT NULL,
     anexos_nf JSONB DEFAULT '[]',
     anexos_boleto JSONB DEFAULT '[]',
+    comprovantes JSONB DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

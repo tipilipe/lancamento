@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 
-const API_URL = window.location.hostname.includes('railway.app')
-  ? '/api'
-  : 'https://lancamento-production.up.railway.app/api';
+const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:3001/api'
+  : window.location.hostname.includes('railway.app')
+    ? '/api'
+    : 'https://lancamento-production.up.railway.app/api';
 
 import {
   Plus, Trash2, FileText, ChevronDown, ChevronUp, Save,
@@ -329,7 +331,22 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
       ]);
 
       setFdas(fdasData.map(f => ({ ...f, id: f.id, filialId: f.filial_id, isOpen: f.is_open })));
-      setRawItems(itemsData.map(i => ({ ...i, id: i.id, fdaId: i.fda_id, anexosNF: i.anexos_nf, anexosBoleto: i.anexos_boleto })));
+      setRawItems(itemsData.map(i => {
+        const parseJson = (val) => {
+          if (typeof val === 'string') {
+            try { return JSON.parse(val); } catch (e) { return []; }
+          }
+          return Array.isArray(val) ? val : [];
+        };
+        return {
+          ...i,
+          id: i.id,
+          fdaId: i.fda_id,
+          anexosNF: parseJson(i.anexos_nf),
+          anexosBoleto: parseJson(i.anexos_boleto),
+          comprovantes: parseJson(i.comprovantes)
+        };
+      }));
       setLogsList(logsData.map(l => ({ ...l, id: l.id, user: l.user_email })));
       setFiliais(filiaisData);
 
@@ -492,7 +509,8 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
           fdaId,
           data: itemData,
           anexosNF: nfUrls,
-          anexosBoleto: boletoUrls
+          anexosBoleto: boletoUrls,
+          comprovantes: []
         })
       });
 
@@ -506,7 +524,7 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
     }
   };
 
-  const updateItem = async (id, data, filesNF = null, filesBoleto = null) => {
+  const updateItem = async (id, data, filesNF = null, filesBoleto = null, comprovantes = null) => {
     try {
       const updatePayload = { data };
 
@@ -545,6 +563,11 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
           }
         }
         updatePayload.anexosBoleto = boletoUrls;
+      }
+
+      // Comprovantes de pagamento (já processados pelo LaunchedModule)
+      if (comprovantes !== null) {
+        updatePayload.comprovantes = comprovantes;
       }
 
       await fetch(`${API_URL}/items/${id}`, {
@@ -747,7 +770,7 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
       {/* Main Content */}
       <main className="flex-1 lg:ml-64 p-4 sm:p-6 md:p-10 overflow-y-auto print:m-0 mt-16 lg:mt-0">
         {currentModule === 'entry' && <EntryModule userEmail={userEmail} fdas={fdasWithItems} allHistory={rawItems} addFda={addFda} toggleFda={toggleFda} updateFdaNumber={updateFdaNumber} deleteFda={deleteFda} saveItem={saveItem} updateItem={updateItem} deleteItem={deleteItem} editTarget={itemToEdit} clearEditTarget={() => setItemToEdit(null)} onEdit={triggerEdit} onPreview={(files, title) => setModalPreview({ title, files })} filiais={filiais} userFiliais={userFiliais} isMaster={isMaster} refreshData={refreshData} />}
-        {currentModule === 'launched' && <LaunchedModule allItems={allItems} userPermissions={userPermissions} onEdit={triggerEdit} onDelete={deleteItem} onPreview={(files) => setModalPreview({ title: 'Visualização', files })} refreshData={refreshData} />}
+        {currentModule === 'launched' && <LaunchedModule allItems={allItems} userPermissions={userPermissions} onEdit={triggerEdit} onDelete={deleteItem} onPreview={(files, title) => setModalPreview({ title: title || 'Visualização', files })} updateItem={updateItem} refreshData={refreshData} />}
         {currentModule === 'finance' && <FinanceModule allItems={allItems} isMaster={isMaster} userPermissions={userPermissions} updateItem={updateItem} onPreview={(files, title) => setModalPreview({ title, files })} onDelete={deleteItem} refreshData={refreshData} />}
         {currentModule === 'filiais' && isMaster && <FiliaisModule filiais={filiais} userEmail={userEmail} refreshData={refreshData} />}
         {currentModule === 'users' && isMaster && <UserManagementModule usersList={usersList} filiais={filiais} refreshData={refreshData} />}
@@ -1672,13 +1695,54 @@ const EntryModule = ({ userEmail, fdas, addFda, toggleFda, updateFdaNumber, dele
   );
 };
 
-const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions }) => {
+const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions, updateItem, refreshData }) => {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('abertos');
   const [sortBy, setSortBy] = useState('vencimento-asc');
   const [filterStatus, setFilterStatus] = useState('all');
   const [eO, setEO] = useState(false);
   const exportRef = useRef(null);
+
+  // Estado do modal de comprovante
+  const [comprovanteModal, setComprovanteModal] = useState(null); // { item } ou null
+  const [comprovanteFile, setComprovanteFile] = useState(null);
+  const [comprovanteUploading, setComprovanteUploading] = useState(false);
+  const comprovanteInputRef = useRef(null);
+
+  const handleAnexarComprovante = async () => {
+    if (!comprovanteFile || !comprovanteModal) return;
+    // Validação básica
+    const ext = '.' + comprovanteFile.name.split('.').pop().toLowerCase();
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      alert('Tipo de arquivo não permitido. Use: PDF, PNG, JPG ou XLSX');
+      return;
+    }
+    if (comprovanteFile.size > MAX_FILE_SIZE) {
+      alert('Arquivo muito grande. Tamanho máximo: 5MB');
+      return;
+    }
+    setComprovanteUploading(true);
+    try {
+      const fileId = await saveFileChunks(comprovanteFile);
+      const novoComprovante = {
+        name: comprovanteFile.name,
+        fileId,
+        date: new Date().toLocaleString('pt-BR'),
+        size: formatFileSize(comprovanteFile.size)
+      };
+      const item = comprovanteModal.item;
+      const comprovantesAtuais = item.comprovantes || [];
+      await updateItem(item.id, item.data, null, null, [...comprovantesAtuais, novoComprovante]);
+      alert('✓ Comprovante anexado com sucesso!');
+      setComprovanteModal(null);
+      setComprovanteFile(null);
+      if (refreshData) refreshData();
+    } catch (err) {
+      alert('Erro ao anexar comprovante: ' + err.message);
+    } finally {
+      setComprovanteUploading(false);
+    }
+  };
 
   // Verificação de Permissão para Abas
   const canViewOpen = userPermissions.includes('all_tabs') || userPermissions.includes('launched_open');
@@ -1807,11 +1871,28 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
                   <td className="p-5 text-right font-black text-slate-900">R$ {parseFloat(i.data.valorLiquido).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
                   <td className="p-5 text-center"><StatusBadge status={i.data.status} /></td>
                   <td className="p-5 text-center">
-                    <div className="flex items-center justify-center gap-2">
+                    <div className="flex items-center justify-center gap-2 flex-wrap">
                       <div className="flex gap-1 mr-2">
                         <button onClick={() => onPreview(i.anexosNF, "Nota Fiscal")} className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.anexosNF?.length > 0 ? 'text-blue-600 border-blue-200 hover:bg-blue-50' : 'text-slate-300 border-slate-100'}`} disabled={!i.anexosNF?.length}>Nota</button>
                         <button onClick={() => onPreview(i.anexosBoleto, "Boleto")} className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.anexosBoleto?.length > 0 ? 'text-slate-600 border-slate-200 hover:bg-slate-50' : 'text-slate-300 border-slate-100'}`} disabled={!i.anexosBoleto?.length}>Boleto</button>
+                        {tab === 'liquidados' && (
+                          <button
+                            onClick={() => onPreview(i.comprovantes, "Comprovantes")}
+                            className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.comprovantes?.length > 0 ? 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100' : 'bg-slate-50 text-slate-300 border-slate-100'}`}
+                            disabled={!i.comprovantes?.length}
+                            title={i.comprovantes?.length ? `${i.comprovantes.length} comprovante(s)` : 'Sem comprovantes'}
+                          >🧾 Comp.</button>
+                        )}
                       </div>
+                      {tab === 'liquidados' && (
+                        <button
+                          onClick={() => { setComprovanteModal({ item: i }); setComprovanteFile(null); }}
+                          className="flex items-center gap-1 px-3 py-1.5 text-[9px] uppercase font-black rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-sm"
+                          title="Anexar comprovante de pagamento"
+                        >
+                          <Paperclip size={11} /> Comprovante
+                        </button>
+                      )}
                       <button onClick={() => onEdit(i)} className="p-2 text-slate-400 hover:text-blue-600" title="Editar"><Edit size={18} /></button>
                       <button onClick={() => onDelete(i.id)} className="p-2 text-slate-400 hover:text-red-600" title="Excluir"><Trash2 size={18} /></button>
                     </div>
@@ -1827,16 +1908,172 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
       <div className="mt-4 text-center text-sm text-slate-500 font-medium">
         Exibindo {filtered.length} de {allItems.filter(i => tab === 'abertos' ? i.data.status !== 'PAGO' : i.data.status === 'PAGO').length} itens
       </div>
+
+      {/* Modal de Anexar Comprovante */}
+      {comprovanteModal && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b flex justify-between items-center bg-emerald-50">
+              <h3 className="font-black text-emerald-800 uppercase text-xs tracking-widest flex items-center gap-2">
+                <Paperclip size={16} className="text-emerald-600" />
+                Anexar Comprovante de Pagamento
+              </h3>
+              <button onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }} className="p-2 hover:bg-emerald-100 rounded-lg">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              {/* Info do item */}
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Item</p>
+                <p className="font-black text-slate-800 text-sm uppercase">{comprovanteModal.item.data.servicos}</p>
+                <p className="text-xs text-slate-500 mt-1">{comprovanteModal.item.fdaNumber} • R$ {parseFloat(comprovanteModal.item.data.valorLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+              </div>
+
+              {/* Comprovantes já anexados */}
+              {comprovanteModal.item.comprovantes?.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Comprovantes já anexados ({comprovanteModal.item.comprovantes.length})</p>
+                  {comprovanteModal.item.comprovantes.map((c, idx) => (
+                    <div key={idx} className="flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+                      <FileText size={14} className="text-emerald-600 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-slate-700 truncate">{c.name}</p>
+                        <p className="text-[9px] text-slate-400">{c.date} • {c.size}</p>
+                      </div>
+                      <button
+                        onClick={() => onPreview([c], 'Comprovante')}
+                        className="p-1 text-emerald-600 hover:bg-emerald-100 rounded"
+                        title="Visualizar"
+                      >
+                        <Eye size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Upload novo comprovante */}
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Novo Comprovante</p>
+                <input
+                  ref={comprovanteInputRef}
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.xlsx"
+                  className="hidden"
+                  onChange={(e) => setComprovanteFile(e.target.files?.[0] || null)}
+                />
+                {!comprovanteFile ? (
+                  <button
+                    onClick={() => comprovanteInputRef.current?.click()}
+                    className="w-full border-2 border-dashed border-emerald-300 rounded-xl py-8 flex flex-col items-center gap-2 hover:border-emerald-500 hover:bg-emerald-50 transition-all group"
+                  >
+                    <Paperclip size={24} className="text-emerald-400 group-hover:text-emerald-600" />
+                    <p className="text-sm font-black text-emerald-600">Clique para selecionar arquivo</p>
+                    <p className="text-[10px] text-slate-400">PDF, PNG, JPG ou XLSX • Máx. 5MB</p>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3 p-4 bg-emerald-50 border-2 border-emerald-300 rounded-xl">
+                    <FileText size={20} className="text-emerald-600 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-slate-700 text-sm truncate">{comprovanteFile.name}</p>
+                      <p className="text-[10px] text-slate-400">{formatFileSize(comprovanteFile.size)}</p>
+                    </div>
+                    <button
+                      onClick={() => setComprovanteFile(null)}
+                      className="p-1 text-slate-400 hover:text-red-500 rounded"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Banner de carregamento */}
+              {comprovanteUploading && (
+                <div className="bg-emerald-50 border-2 border-emerald-200 rounded-xl p-4 animate-pulse">
+                  <div className="flex items-center gap-3">
+                    <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+                    <p className="font-black text-emerald-800 text-sm uppercase tracking-wide">📤 Enviando comprovante...</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Botões de ação */}
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }}
+                  className="flex-1 py-3 border-2 border-slate-200 text-slate-600 font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-50 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleAnexarComprovante}
+                  disabled={!comprovanteFile || comprovanteUploading}
+                  className="flex-1 py-3 bg-emerald-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-emerald-700 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {comprovanteUploading ? (
+                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Enviando...</>
+                  ) : (
+                    <><Paperclip size={14} /> Anexar Comprovante</>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, userPermissions }) => {
+const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, userPermissions, refreshData }) => {
   const [aT, setAT] = useState('PENDENTE');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState('vencimento-asc');
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedItems, setSelectedItems] = useState([]);
+
+  // Estado do modal de comprovante
+  const [comprovanteModal, setComprovanteModal] = useState(null); // { item } ou null
+  const [comprovanteFile, setComprovanteFile] = useState(null);
+  const [comprovanteUploading, setComprovanteUploading] = useState(false);
+  const comprovanteInputRef = useRef(null);
+
+  const handleAnexarComprovante = async () => {
+    if (!comprovanteFile || !comprovanteModal) return;
+    // Validação básica
+    const ext = '.' + comprovanteFile.name.split('.').pop().toLowerCase();
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      alert('Tipo de arquivo não permitido. Use: PDF, PNG, JPG ou XLSX');
+      return;
+    }
+    if (comprovanteFile.size > MAX_FILE_SIZE) {
+      alert('Arquivo muito grande. Tamanho máximo: 5MB');
+      return;
+    }
+    setComprovanteUploading(true);
+    try {
+      const fileId = await saveFileChunks(comprovanteFile);
+      const novoComprovante = {
+        name: comprovanteFile.name,
+        fileId,
+        date: new Date().toLocaleString('pt-BR'),
+        size: formatFileSize(comprovanteFile.size)
+      };
+      const item = comprovanteModal.item;
+      const comprovantesAtuais = item.comprovantes || [];
+      await updateItem(item.id, item.data, null, null, [...comprovantesAtuais, novoComprovante]);
+      alert('✓ Comprovante anexado com sucesso!');
+      setComprovanteModal(null);
+      setComprovanteFile(null);
+      if (refreshData) refreshData();
+    } catch (err) {
+      alert('Erro ao anexar comprovante: ' + err.message);
+    } finally {
+      setComprovanteUploading(false);
+    }
+  };
 
   // Definição das Abas com Permissões
   const steps = useMemo(() => {
@@ -2154,13 +2391,32 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
                         <div className="whitespace-nowrap">R$ {parseFloat(it.data.valorLiquido).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
                       </td>
                       <td className="p-3 sm:p-5 text-center w-auto sm:w-1/4 hidden md:table-cell">
-                        <div className="flex gap-2 justify-center">
+                        <div className="flex gap-2 justify-center flex-wrap">
                           <button onClick={() => openFile(it.anexosNF, "Nota Fiscal")} className="flex items-center gap-1 text-[9px] font-bold uppercase bg-blue-50 text-blue-600 px-3 py-1.5 rounded hover:bg-blue-100 transition-colors"><ExternalLink size={10} /> Nota</button>
                           <button onClick={() => openFile(it.anexosBoleto, "Boleto")} className="flex items-center gap-1 text-[9px] font-bold uppercase bg-slate-50 text-slate-600 px-3 py-1.5 rounded hover:bg-slate-100 transition-colors"><ExternalLink size={10} /> Boleto</button>
+                          {aT === 'PAGO' && (
+                            <button
+                              onClick={() => onPreview(it.comprovantes, "Comprovantes")}
+                              className={`flex items-center gap-1 text-[9px] font-bold uppercase ${it.comprovantes?.length > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-300'} px-3 py-1.5 rounded hover:bg-emerald-100 transition-colors`}
+                              disabled={!it.comprovantes?.length}
+                              title={it.comprovantes?.length ? `${it.comprovantes.length} comprovante(s)` : 'Sem comprovantes'}
+                            >
+                              <ExternalLink size={10} /> Comp.
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="p-3 sm:p-5 text-center w-auto sm:w-1/4">
                         <div className="flex items-center justify-end gap-2 flex-wrap">
+                          {aT === 'PAGO' && (
+                            <button
+                              onClick={() => { setComprovanteModal({ item: it }); setComprovanteFile(null); }}
+                              className="flex items-center gap-1 px-3 py-2 text-[9px] uppercase font-black rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-md"
+                              title="Anexar comprovante de pagamento"
+                            >
+                              <Paperclip size={11} /> Comprovante
+                            </button>
+                          )}
                           {steps[aT].prev && (
                             <button onClick={() => handleStatus(it.id, it.data, steps[aT].prev)} className="p-2 text-slate-400 hover:text-orange-500 transition-colors" title="Retornar Status"><Undo2 size={18} /></button>
                           )}
@@ -2179,6 +2435,121 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
           ))
         )}
       </div>
+
+      {/* Modal de Anexar Comprovante */}
+      {comprovanteModal && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b flex justify-between items-center bg-emerald-50">
+              <h3 className="font-black text-emerald-800 uppercase text-xs tracking-widest flex items-center gap-2">
+                <Paperclip size={16} className="text-emerald-600" />
+                Anexar Comprovante de Pagamento
+              </h3>
+              <button onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }} className="p-2 hover:bg-emerald-100 rounded-lg">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              {/* Info do item */}
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Item</p>
+                <p className="font-black text-slate-800 text-sm uppercase">{comprovanteModal.item.data.servicos}</p>
+                <p className="text-xs text-slate-500 mt-1">{comprovanteModal.item.fdaNumber} • R$ {parseFloat(comprovanteModal.item.data.valorLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+              </div>
+
+              {/* Comprovantes já anexados */}
+              {comprovanteModal.item.comprovantes?.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Comprovantes já anexados ({comprovanteModal.item.comprovantes.length})</p>
+                  {comprovanteModal.item.comprovantes.map((c, idx) => (
+                    <div key={idx} className="flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+                      <FileText size={14} className="text-emerald-600 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-slate-700 truncate">{c.name}</p>
+                        <p className="text-[9px] text-slate-400">{c.date} • {c.size}</p>
+                      </div>
+                      <button
+                        onClick={() => onPreview([c], 'Comprovante')}
+                        className="p-1 text-emerald-600 hover:bg-emerald-100 rounded"
+                        title="Visualizar"
+                      >
+                        <Eye size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Upload novo comprovante */}
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Novo Comprovante</p>
+                <input
+                  ref={comprovanteInputRef}
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.xlsx"
+                  className="hidden"
+                  onChange={(e) => setComprovanteFile(e.target.files?.[0] || null)}
+                />
+                {!comprovanteFile ? (
+                  <button
+                    onClick={() => comprovanteInputRef.current?.click()}
+                    className="w-full border-2 border-dashed border-emerald-300 rounded-xl py-8 flex flex-col items-center gap-2 hover:border-emerald-500 hover:bg-emerald-50 transition-all group"
+                  >
+                    <Paperclip size={24} className="text-emerald-400 group-hover:text-emerald-600" />
+                    <p className="text-sm font-black text-emerald-600">Clique para selecionar arquivo</p>
+                    <p className="text-[10px] text-slate-400">PDF, PNG, JPG ou XLSX • Máx. 5MB</p>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3 p-4 bg-emerald-50 border-2 border-emerald-300 rounded-xl">
+                    <FileText size={20} className="text-emerald-600 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-slate-700 text-sm truncate">{comprovanteFile.name}</p>
+                      <p className="text-[10px] text-slate-400">{formatFileSize(comprovanteFile.size)}</p>
+                    </div>
+                    <button
+                      onClick={() => setComprovanteFile(null)}
+                      className="p-1 text-slate-400 hover:text-red-500 rounded"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Banner de carregamento */}
+              {comprovanteUploading && (
+                <div className="bg-emerald-50 border-2 border-emerald-200 rounded-xl p-4 animate-pulse">
+                  <div className="flex items-center gap-3">
+                    <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+                    <p className="font-black text-emerald-800 text-sm uppercase tracking-wide">📤 Enviando comprovante...</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Botões de ação */}
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }}
+                  className="flex-1 py-3 border-2 border-slate-200 text-slate-600 font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-50 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleAnexarComprovante}
+                  disabled={!comprovanteFile || comprovanteUploading}
+                  className="flex-1 py-3 bg-emerald-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-emerald-700 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {comprovanteUploading ? (
+                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Enviando...</>
+                  ) : (
+                    <><Paperclip size={14} /> Anexar Comprovante</>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

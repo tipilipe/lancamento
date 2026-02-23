@@ -225,11 +225,11 @@ app.get('/api/items', async (req, res) => {
 });
 
 app.post('/api/items', async (req, res) => {
-    const { fdaId, data, anexosNF, anexosBoleto } = req.body;
+    const { fdaId, data, anexosNF, anexosBoleto, comprovantes } = req.body;
     try {
         const result = await pool.query(
-            'INSERT INTO items (fda_id, data, anexos_nf, anexos_boleto) VALUES ($1, $2, $3, $4) RETURNING *',
-            [fdaId, JSON.stringify(data), JSON.stringify(anexosNF), JSON.stringify(anexosBoleto)]
+            'INSERT INTO items (fda_id, data, anexos_nf, anexos_boleto, comprovantes) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [fdaId, JSON.stringify(data), JSON.stringify(anexosNF || []), JSON.stringify(anexosBoleto || []), JSON.stringify(comprovantes || [])]
         );
         res.json(result.rows[0]);
     } catch (err) {
@@ -239,11 +239,11 @@ app.post('/api/items', async (req, res) => {
 
 app.put('/api/items/:id', async (req, res) => {
     const { id } = req.params;
-    const { data, anexosNF, anexosBoleto } = req.body;
+    const { data, anexosNF, anexosBoleto, comprovantes } = req.body;
     try {
         const result = await pool.query(
-            'UPDATE items SET data = $1, anexos_nf = COALESCE($2, anexos_nf), anexos_boleto = COALESCE($3, anexos_boleto), updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING *',
-            [JSON.stringify(data), anexosNF ? JSON.stringify(anexosNF) : null, anexosBoleto ? JSON.stringify(anexosBoleto) : null, id]
+            'UPDATE items SET data = $1, anexos_nf = COALESCE($2, anexos_nf), anexos_boleto = COALESCE($3, anexos_boleto), comprovantes = COALESCE($4, comprovantes), updated_at = CURRENT_TIMESTAMP WHERE id = $5 RETURNING *',
+            [JSON.stringify(data), anexosNF ? JSON.stringify(anexosNF) : null, anexosBoleto ? JSON.stringify(anexosBoleto) : null, comprovantes ? JSON.stringify(comprovantes) : null, id]
         );
         res.json(result.rows[0]);
     } catch (err) {
