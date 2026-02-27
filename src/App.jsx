@@ -432,12 +432,18 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
     refreshData();
   };
   const toggleFda = async (id, status) => {
-    await fetch(`${API_URL}/fdas/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ is_open: !status })
-    });
-    refreshData();
+    setFdas(prev => prev.map(f => f.id === id ? { ...f, isOpen: !status } : f));
+    try {
+      await fetch(`${API_URL}/fdas/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_open: !status })
+      });
+    } catch (err) {
+      console.error('Erro ao alternar FDA:', err);
+      // Revert in case of error
+      setFdas(prev => prev.map(f => f.id === id ? { ...f, isOpen: status } : f));
+    }
   };
   const updateFdaNumber = async (id, val) => {
     await fetch(`${API_URL}/fdas/${id}`, {
@@ -873,14 +879,16 @@ const FdaNumberInput = ({ initialValue, onSave }) => {
   );
 };
 
-const FilterBar = ({ search, onSearchChange, sortBy, onSortChange, filterStatus, onFilterChange, showStatusFilter = false }) => {
+const FilterBar = ({ search, onSearchChange, sortBy, onSortChange, filterStatus, onFilterChange, showStatusFilter = false, groupBy, onGroupChange, showGroupBy = false }) => {
   const sortOptions = [
     { value: 'vencimento-asc', label: 'Vencimento (Mais Antigo)' },
     { value: 'vencimento-desc', label: 'Vencimento (Mais Recente)' },
     { value: 'valor-asc', label: 'Valor (Menor)' },
     { value: 'valor-desc', label: 'Valor (Maior)' },
     { value: 'servico-asc', label: 'Serviço (A-Z)' },
-    { value: 'servico-desc', label: 'Serviço (Z-A)' }
+    { value: 'servico-desc', label: 'Serviço (Z-A)' },
+    { value: 'categoria-asc', label: 'Categoria (A-Z)' },
+    { value: 'categoria-desc', label: 'Categoria (Z-A)' }
   ];
 
   const statusOptions = [
@@ -889,6 +897,13 @@ const FilterBar = ({ search, onSearchChange, sortBy, onSortChange, filterStatus,
     { value: 'PROVISIONADO', label: 'Provisionado' },
     { value: 'APROVADO', label: 'Aprovado' },
     { value: 'PAGO', label: 'Pago' }
+  ];
+
+  const groupOptions = [
+    { value: 'vencimento', label: 'Vencimento' },
+    { value: 'cliente', label: 'Cliente/Fornecedor (A-Z)' },
+    { value: 'servico', label: 'Serviço (A-Z)' },
+    { value: 'categoria', label: 'Categoria (A-Z)' }
   ];
 
   return (
@@ -930,6 +945,22 @@ const FilterBar = ({ search, onSearchChange, sortBy, onSortChange, filterStatus,
               className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 bg-white hover:bg-slate-50 transition-colors outline-none cursor-pointer"
             >
               {statusOptions.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Agrupamento (opcional) */}
+        {showGroupBy && (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest hidden lg:block">Agrupar por:</span>
+            <select
+              value={groupBy}
+              onChange={e => onGroupChange(e.target.value)}
+              className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 bg-white hover:bg-slate-50 transition-colors outline-none cursor-pointer"
+            >
+              {groupOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -1244,7 +1275,7 @@ const EntryModule = ({ userEmail, fdas, addFda, toggleFda, updateFdaNumber, dele
   const [activeFdaId, setActiveFdaId] = useState(null);
   const [selectedFilial, setSelectedFilial] = useState('');
   const [formData, setFormData] = useState({
-    status: 'PENDENTE', navio: '', vencimento: '', servicos: '', documento: '', dataEmissao: '',
+    status: 'PENDENTE', navio: '', vencimento: '', servicos: '', categoria: '', documento: '', dataEmissao: '',
     valorBruto: 0, centroCusto: '', nfs: '', valorBase: 0, valorLiquido: 0, cartaCredito: 0,
     pis: 0, cofins: 0, csll: 0, guia5952: 0, irrf: 0, guia1708: 0, inss: 0, iss: 0, impostoRet: 0, multa: 0, juros: 0, total: 0,
     clienteFornecedor: '', cnpjCpf: '',
@@ -1260,6 +1291,7 @@ const EntryModule = ({ userEmail, fdas, addFda, toggleFda, updateFdaNumber, dele
   // Auto-fill Suggestions
   const clients = useMemo(() => [...new Set(allHistory.map(i => i.data.clienteFornecedor).filter(Boolean))], [allHistory]);
   const vessels = useMemo(() => [...new Set(allHistory.map(i => i.data.navio).filter(Boolean))], [allHistory]);
+  const categories = useMemo(() => [...new Set(allHistory.map(i => i.data.categoria).filter(Boolean))], [allHistory]);
 
   useEffect(() => {
     if (editTarget) {
@@ -1434,7 +1466,7 @@ const EntryModule = ({ userEmail, fdas, addFda, toggleFda, updateFdaNumber, dele
 
       // Limpa o formulário após sucesso
       setFormData({
-        status: 'PENDENTE', navio: '', vencimento: '', servicos: '', documento: '', dataEmissao: '', valorBruto: 0, centroCusto: '', nfs: '', valorBase: 0, valorLiquido: 0, pis: 0, cofins: 0, csll: 0, guia5952: 0, irrf: 0, guia1708: 0, inss: 0, iss: 0, impostoRet: 0, multa: 0, juros: 0, total: 0, clienteFornecedor: '', cnpjCpf: '', banco: '', codigoBanco: '', agencia: '', contaCorrente: '', chavePix: '', dataPagamento: '', valorPago: 0, jurosPagos: 0
+        status: 'PENDENTE', navio: '', vencimento: '', servicos: '', categoria: '', documento: '', dataEmissao: '', valorBruto: 0, centroCusto: '', nfs: '', valorBase: 0, valorLiquido: 0, pis: 0, cofins: 0, csll: 0, guia5952: 0, irrf: 0, guia1708: 0, inss: 0, iss: 0, impostoRet: 0, multa: 0, juros: 0, total: 0, clienteFornecedor: '', cnpjCpf: '', banco: '', codigoBanco: '', agencia: '', contaCorrente: '', chavePix: '', dataPagamento: '', valorPago: 0, jurosPagos: 0
       });
       setAnexosNF([]);
       setAnexosBoleto([]);
@@ -1454,6 +1486,7 @@ const EntryModule = ({ userEmail, fdas, addFda, toggleFda, updateFdaNumber, dele
     <div className="max-w-6xl mx-auto">
       <datalist id="clients-list">{clients.map(c => <option key={c} value={c} />)}</datalist>
       <datalist id="vessels-list">{vessels.map(v => <option key={v} value={v} />)}</datalist>
+      <datalist id="categories-list">{categories.map(c => <option key={c} value={c} />)}</datalist>
 
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-10">
         <h2 className="text-2xl sm:text-3xl font-black text-slate-800 tracking-tight uppercase">Lançamento de Itens</h2>
@@ -1521,7 +1554,10 @@ const EntryModule = ({ userEmail, fdas, addFda, toggleFda, updateFdaNumber, dele
                 <div className="space-y-4">
                   <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Dados Principais</h5>
                   <InputField label="Navio (Vessel)" list="vessels-list" value={formData.navio} onChange={v => handleInputChange('navio', v)} />
-                  <InputField label="Serviços" value={formData.servicos} onChange={v => handleInputChange('servicos', v)} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <InputField label="Serviços" value={formData.servicos} onChange={v => handleInputChange('servicos', v)} />
+                    <InputField label="Categoria" list="categories-list" value={formData.categoria} onChange={v => handleInputChange('categoria', v)} />
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <InputField label="Documento" value={formData.documento} onChange={v => handleInputChange('documento', v)} />
                     <InputField label="NF (Invoice)" value={formData.nfs} onChange={v => handleInputChange('nfs', v)} />
@@ -1771,6 +1807,10 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
         return sorted.sort((a, b) => (a.data.servicos || '').localeCompare(b.data.servicos || ''));
       case 'servico-desc':
         return sorted.sort((a, b) => (b.data.servicos || '').localeCompare(a.data.servicos || ''));
+      case 'categoria-asc':
+        return sorted.sort((a, b) => (a.data.categoria || '').localeCompare(b.data.categoria || ''));
+      case 'categoria-desc':
+        return sorted.sort((a, b) => (b.data.categoria || '').localeCompare(a.data.categoria || ''));
       default:
         return sorted;
     }
@@ -1780,6 +1820,7 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
     let items = allItems.filter(i => {
       const matchText = (
         (i.data.servicos || '').toLowerCase().includes(search.toLowerCase()) ||
+        (i.data.categoria || '').toLowerCase().includes(search.toLowerCase()) ||
         (i.fdaNumber || '').toLowerCase().includes(search.toLowerCase()) ||
         (i.data.clienteFornecedor || '').toLowerCase().includes(search.toLowerCase())
       );
@@ -1801,6 +1842,7 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
             data={filtered.map(item => ({
               'FDA': item.fdaNumber,
               'Filial': item.filialName,
+              'Categoria': item.data.categoria || 'N/A',
               'Serviço': item.data.servicos,
               'Cliente/Fornecedor': item.data.clienteFornecedor,
               'CNPJ/CPF': item.data.cnpjCpf || 'N/A',
@@ -1844,6 +1886,9 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
               <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-blue-600" onClick={() => setSortBy(sortBy === 'vencimento-asc' ? 'vencimento-desc' : 'vencimento-asc')}>
                 Vencimento {sortBy.includes('vencimento') && (sortBy.includes('asc') ? '↑' : '↓')}
               </th>
+              <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-blue-600" onClick={() => setSortBy(sortBy === 'categoria-asc' ? 'categoria-desc' : 'categoria-asc')}>
+                Categoria {sortBy.includes('categoria') && (sortBy.includes('asc') ? '↑' : '↓')}
+              </th>
               <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-blue-600" onClick={() => setSortBy(sortBy === 'servico-asc' ? 'servico-desc' : 'servico-asc')}>
                 Serviço / FDA {sortBy.includes('servico') && (sortBy.includes('asc') ? '↑' : '↓')}
               </th>
@@ -1862,7 +1907,8 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
             ) : (
               filtered.map(i => (
                 <tr key={i.id} className="hover:bg-slate-50">
-                  <td className="p-5 font-bold text-slate-800">{new Date(i.data.vencimento).toLocaleDateString('pt-BR')}</td>
+                  <td className="p-5 font-bold text-slate-800">{i.data.vencimento ? new Date(i.data.vencimento.includes('T') ? i.data.vencimento : `${i.data.vencimento}T12:00:00`).toLocaleDateString('pt-BR') : 'Sem Data'}</td>
+                  <td className="p-5 font-black text-slate-600 uppercase text-xs">{i.data.categoria || '-'}</td>
                   <td className="p-5">
                     <div className="font-black text-slate-800 uppercase text-xs">{i.data.servicos}</div>
                     <div className="text-[10px] text-blue-600 font-black mt-1">{i.fdaNumber}</div>
@@ -2031,6 +2077,7 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
   const [aT, setAT] = useState('PENDENTE');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState('vencimento-asc');
+  const [groupBy, setGroupBy] = useState('vencimento');
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedItems, setSelectedItems] = useState([]);
 
@@ -2112,6 +2159,10 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
         return sorted.sort((a, b) => (a.data.servicos || '').localeCompare(b.data.servicos || ''));
       case 'servico-desc':
         return sorted.sort((a, b) => (b.data.servicos || '').localeCompare(a.data.servicos || ''));
+      case 'categoria-asc':
+        return sorted.sort((a, b) => (a.data.categoria || '').localeCompare(b.data.categoria || ''));
+      case 'categoria-desc':
+        return sorted.sort((a, b) => (b.data.categoria || '').localeCompare(a.data.categoria || ''));
       default:
         return sorted;
     }
@@ -2123,6 +2174,7 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
     let filtered = allItems.filter(i => i.data.status === aT && (
       i.data.servicos.toLowerCase().includes(search.toLowerCase()) ||
       i.data.clienteFornecedor.toLowerCase().includes(search.toLowerCase()) ||
+      (i.data.categoria || '').toLowerCase().includes(search.toLowerCase()) ||
       (i.data.navio || '').toLowerCase().includes(search.toLowerCase())
     ));
 
@@ -2131,7 +2183,12 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
 
     const groups = {};
     filtered.forEach(item => {
-      const dateKey = item.data.vencimento || 'Sem Data';
+      let dateKey = 'Sem Data';
+      if (groupBy === 'vencimento') dateKey = item.data.vencimento || 'Sem Data';
+      if (groupBy === 'cliente') dateKey = item.data.clienteFornecedor || 'Sem Cliente';
+      if (groupBy === 'servico') dateKey = item.data.servicos || 'Sem Serviço';
+      if (groupBy === 'categoria') dateKey = item.data.categoria || 'Sem Categoria';
+
       if (!groups[dateKey]) groups[dateKey] = [];
       groups[dateKey].push(item);
     });
@@ -2141,7 +2198,7 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
       items: groups[date],
       total: groups[date].reduce((sum, item) => sum + parseFloat(item.data.valorLiquido || 0), 0)
     }));
-  }, [allItems, aT, search, steps, sortBy]);
+  }, [allItems, aT, search, steps, sortBy, groupBy]);
 
   const handleStatus = async (id, cur, s) => {
     const n = new Date().toISOString().split('T')[0];
@@ -2231,6 +2288,7 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
           <ExportButton
             data={groupedItems.flatMap(group => group.items).map(item => ({
               'Vencimento': item.data.vencimento,
+              'Categoria': item.data.categoria || 'N/A',
               'Serviço': item.data.servicos,
               'Cliente/Fornecedor': item.data.clienteFornecedor,
               'CNPJ/CPF': item.data.cnpjCpf || 'N/A',
@@ -2261,6 +2319,9 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
           sortBy={sortBy}
           onSortChange={setSortBy}
           showStatusFilter={false}
+          showGroupBy={true}
+          groupBy={groupBy}
+          onGroupChange={setGroupBy}
         />
       </header>
 
@@ -2359,7 +2420,11 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
                 <div className="flex items-center gap-3">
                   <Calendar size={16} className="text-slate-400" />
                   <span className="font-black text-slate-700 text-xs uppercase tracking-widest">
-                    Vencimento: {new Date(group.date).toLocaleDateString('pt-BR')}
+                    {groupBy === 'vencimento' ? (
+                      <>Vencimento: {group.date !== 'Sem Data' ? new Date(group.date.includes('T') ? group.date : `${group.date}T12:00:00`).toLocaleDateString('pt-BR') : 'Sem Data'}</>
+                    ) : (
+                      <>{groupBy === 'cliente' ? 'Cliente/Fornecedor' : groupBy === 'categoria' ? 'Categoria' : 'Serviço'}: {group.date}</>
+                    )}
                   </span>
                 </div>
                 <div className="flex items-center gap-4">
@@ -2385,7 +2450,8 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
                       <td className="p-3 sm:p-5 w-full sm:w-1/3">
                         <div className="font-black text-slate-800 uppercase text-xs">{it.data.servicos}</div>
                         <div className="text-[10px] text-slate-400 font-bold mt-1">{it.data.clienteFornecedor}</div>
-                        {it.data.navio && <div className="text-[10px] text-blue-600 font-bold mt-1">🚢 {it.data.navio}</div>}
+                        <div className="text-[10px] text-emerald-600 font-bold mt-1 uppercase px-2 py-0.5 bg-emerald-50 rounded inline-block border border-emerald-100">{it.data.categoria || 'SEM CATEGORIA'}</div>
+                        {it.data.navio && <div className="text-[10px] text-blue-600 font-bold mt-1 block">🚢 {it.data.navio}</div>}
                       </td>
                       <td className="p-3 sm:p-5 text-right font-black text-slate-900 w-auto sm:w-1/6">
                         <div className="whitespace-nowrap">R$ {parseFloat(it.data.valorLiquido).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
@@ -2834,7 +2900,7 @@ const UserManagementModule = ({ usersList, filiais, refreshData }) => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
         <h2 className="text-2xl sm:text-3xl font-black text-slate-800 tracking-tight uppercase">Gerenciar Usuários</h2>
         <ExportButton
-          data={usersList.map(u => ({
+          data={[...usersList].sort((a, b) => (a.email || '').localeCompare(b.email || '')).map(u => ({
             'E-mail': u.email,
             'Módulos': (u.modules || []).join(', '),
             'Filiais': (u.filiais || []).map(fId => filiais.find(f => f.id === fId)?.nome).filter(Boolean).join(', ') || 'Nenhuma',
@@ -2867,7 +2933,7 @@ const UserManagementModule = ({ usersList, filiais, refreshData }) => {
 
       {/* Lista de Usuários */}
       <div className="grid gap-6">
-        {usersList.map(user => (
+        {[...usersList].sort((a, b) => (a.email || '').localeCompare(b.email || '')).map(user => (
           <div key={user.email} className="bg-white rounded-2xl border border-slate-200 p-6">
             <div className="flex items-center justify-between mb-6">
               <h3 className="font-bold text-slate-800 flex items-center gap-2">

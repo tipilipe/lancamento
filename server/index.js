@@ -51,7 +51,8 @@ app.post('/api/auth/login', async (req, res) => {
         const token = jwt.sign({ email: user.email }, JWT_SECRET, { expiresIn: '24h' });
         res.json({ token, user: { email: user.email, modules: user.modules } });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Error during login:', err);
+        res.status(500).json({ error: err.message || JSON.stringify(err) });
     }
 });
 
