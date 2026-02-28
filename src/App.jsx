@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+﻿import React, { useState, useEffect, useMemo, useRef } from 'react';
 
 const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   ? 'http://localhost:3001/api'
@@ -291,7 +291,7 @@ const LoginScreen = ({ errorFromApp, onLoginSuccess }) => {
 
 // --- DASHBOARD (Refactored for Neon) ---
 const Dashboard = ({ user, onSignOut, onNoAccess }) => {
-  const [currentModule, setCurrentModule] = useState('entry');
+  const [currentModule, setCurrentModule] = useState(null);
   const [userPermissions, setUserPermissions] = useState([]);
   const [loadingPermissions, setLoadingPermissions] = useState(true);
   const [modalPreview, setModalPreview] = useState(null);
@@ -313,7 +313,7 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
     if (!userEmail) return;
     try {
       if (isMaster) {
-        setUserPermissions(['entry', 'launched', 'finance', 'users', 'logs', 'launched_open', 'launched_paid', 'finance_pending', 'finance_provision', 'finance_approved', 'finance_paid']);
+        setUserPermissions(['entry', 'launched', 'finance', 'users', 'logs', 'launched_open', 'launched_paid', 'finance_pending', 'finance_provision', 'finance_approved', 'finance_paid', 'finance_btn_provision', 'finance_btn_approve', 'finance_btn_liquidate']);
       }
 
       const [fdasRes, itemsRes, logsRes, filiaisRes] = await Promise.all([
@@ -353,10 +353,19 @@ const Dashboard = ({ user, onSignOut, onNoAccess }) => {
       const permRes = await fetch(`${API_URL}/permissions/${userEmail}`);
       const permData = await permRes.json();
 
-      if (!isMaster) {
-        setUserPermissions(permData.modules || ['entry']);
-      }
+      const permissions = isMaster ? ['entry', 'launched', 'finance', 'users', 'logs', 'launched_open', 'launched_paid', 'finance_pending', 'finance_provision', 'finance_approved', 'finance_paid'] : (permData.modules || ['entry']);
+      setUserPermissions(permissions);
       setUserFiliais(permData.filiais || []);
+
+      // Define a ordem de prioridade dos módulos para a tela inicial
+      const modulePriority = ['entry', 'launched', 'finance', 'logs', 'filiais', 'users'];
+
+      // Se o módulo atual ainda não foi definido, encontra o primeiro com acesso
+      setCurrentModule(prev => {
+        if (prev) return prev;
+        const firstAvailable = modulePriority.find(m => permissions.includes(m));
+        return firstAvailable || 'entry'; // Fallback para 'entry' se nada for encontrado, embora improvável
+      });
 
       if (isMaster) {
         const allPermsRes = await fetch(`${API_URL}/permissions`);
@@ -1734,27 +1743,32 @@ const EntryModule = ({ userEmail, fdas, addFda, toggleFda, updateFdaNumber, dele
 const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions, updateItem, refreshData }) => {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('abertos');
+  const [liquidadosSubTab, setLiquidadosSubTab] = useState('nao-conciliados');
   const [sortBy, setSortBy] = useState('vencimento-asc');
   const [filterStatus, setFilterStatus] = useState('all');
   const [eO, setEO] = useState(false);
   const exportRef = useRef(null);
 
   // Estado do modal de comprovante
-  const [comprovanteModal, setComprovanteModal] = useState(null); // { item } ou null
+  const [comprovanteModal, setComprovanteModal] = useState(null);
   const [comprovanteFile, setComprovanteFile] = useState(null);
   const [comprovanteUploading, setComprovanteUploading] = useState(false);
   const comprovanteInputRef = useRef(null);
 
+  // Estado do modal de conciliacao
+  const [conciliacaoModal, setConciliacaoModal] = useState(null);
+  const [valorConciliado, setValorConciliado] = useState('');
+  const [conciliando, setConciliando] = useState(false);
+
   const handleAnexarComprovante = async () => {
     if (!comprovanteFile || !comprovanteModal) return;
-    // Validação básica
     const ext = '.' + comprovanteFile.name.split('.').pop().toLowerCase();
     if (!ALLOWED_EXTENSIONS.includes(ext)) {
-      alert('Tipo de arquivo não permitido. Use: PDF, PNG, JPG ou XLSX');
+      alert('Tipo de arquivo nao permitido. Use: PDF, PNG, JPG ou XLSX');
       return;
     }
     if (comprovanteFile.size > MAX_FILE_SIZE) {
-      alert('Arquivo muito grande. Tamanho máximo: 5MB');
+      alert('Arquivo muito grande. Tamanho maximo: 5MB');
       return;
     }
     setComprovanteUploading(true);
@@ -1769,7 +1783,7 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
       const item = comprovanteModal.item;
       const comprovantesAtuais = item.comprovantes || [];
       await updateItem(item.id, item.data, null, null, [...comprovantesAtuais, novoComprovante]);
-      alert('✓ Comprovante anexado com sucesso!');
+      alert('\u2713 Comprovante anexado com sucesso!');
       setComprovanteModal(null);
       setComprovanteFile(null);
       if (refreshData) refreshData();
@@ -1780,39 +1794,55 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
     }
   };
 
-  // Verificação de Permissão para Abas
+  const handleConciliar = async () => {
+    if (!conciliacaoModal) return;
+    const val = parseFloat(valorConciliado.replace(',', '.'));
+    if (isNaN(val) || val <= 0) {
+      alert('Informe um valor valido maior que zero.');
+      return;
+    }
+    setConciliando(true);
+    try {
+      const item = conciliacaoModal.item;
+      const novoData = {
+        ...item.data,
+        conciliado: true,
+        valorConciliado: val,
+        dataConciliacao: new Date().toLocaleDateString('pt-BR')
+      };
+      await updateItem(item.id, novoData, null, null, null);
+      alert('\u2713 Item conciliado com sucesso!');
+      setConciliacaoModal(null);
+      setValorConciliado('');
+      if (refreshData) refreshData();
+    } catch (err) {
+      alert('Erro ao conciliar: ' + err.message);
+    } finally {
+      setConciliando(false);
+    }
+  };
+
   const canViewOpen = userPermissions.includes('all_tabs') || userPermissions.includes('launched_open');
   const canViewPaid = userPermissions.includes('all_tabs') || userPermissions.includes('launched_paid');
 
-  // Ajusta a aba padrão se o usuário não tiver acesso à 'abertos'
   useEffect(() => {
     if (!canViewOpen && canViewPaid) setTab('liquidados');
   }, [canViewOpen, canViewPaid]);
 
   useEffect(() => { const h = (e) => { if (exportRef.current && !exportRef.current.contains(e.target)) setEO(false); }; document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h); }, []);
 
-  // Função de ordenação
   const applySorting = (items) => {
     const sorted = [...items];
     switch (sortBy) {
-      case 'vencimento-asc':
-        return sorted.sort((a, b) => new Date(a.data.vencimento) - new Date(b.data.vencimento));
-      case 'vencimento-desc':
-        return sorted.sort((a, b) => new Date(b.data.vencimento) - new Date(a.data.vencimento));
-      case 'valor-asc':
-        return sorted.sort((a, b) => parseFloat(a.data.total) - parseFloat(b.data.total));
-      case 'valor-desc':
-        return sorted.sort((a, b) => parseFloat(b.data.total) - parseFloat(a.data.total));
-      case 'servico-asc':
-        return sorted.sort((a, b) => (a.data.servicos || '').localeCompare(b.data.servicos || ''));
-      case 'servico-desc':
-        return sorted.sort((a, b) => (b.data.servicos || '').localeCompare(a.data.servicos || ''));
-      case 'categoria-asc':
-        return sorted.sort((a, b) => (a.data.categoria || '').localeCompare(b.data.categoria || ''));
-      case 'categoria-desc':
-        return sorted.sort((a, b) => (b.data.categoria || '').localeCompare(a.data.categoria || ''));
-      default:
-        return sorted;
+      case 'vencimento-asc': return sorted.sort((a, b) => new Date(a.data.vencimento) - new Date(b.data.vencimento));
+      case 'vencimento-desc': return sorted.sort((a, b) => new Date(b.data.vencimento) - new Date(a.data.vencimento));
+      case 'valor-asc': return sorted.sort((a, b) => parseFloat(a.data.total) - parseFloat(b.data.total));
+      case 'valor-desc': return sorted.sort((a, b) => parseFloat(b.data.total) - parseFloat(a.data.total));
+      case 'servico-asc': return sorted.sort((a, b) => (a.data.servicos || '').localeCompare(b.data.servicos || ''));
+      case 'servico-desc': return sorted.sort((a, b) => (b.data.servicos || '').localeCompare(a.data.servicos || ''));
+      case 'categoria-asc': return sorted.sort((a, b) => (a.data.categoria || '').localeCompare(b.data.categoria || ''));
+      case 'categoria-desc': return sorted.sort((a, b) => (b.data.categoria || '').localeCompare(a.data.categoria || ''));
+      default: return sorted;
     }
   };
 
@@ -1831,19 +1861,23 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
     return applySorting(items);
   }, [allItems, search, tab, sortBy, filterStatus]);
 
-  if (!canViewOpen && !canViewPaid) return <div className="text-center py-20 text-slate-400">Acesso restrito a este módulo.</div>;
+  const liquidadosNaoConciliados = useMemo(() => filtered.filter(i => !i.data.conciliado), [filtered]);
+  const liquidadosConciliados = useMemo(() => filtered.filter(i => i.data.conciliado === true), [filtered]);
+  const currentLiquidados = liquidadosSubTab === 'nao-conciliados' ? liquidadosNaoConciliados : liquidadosConciliados;
+
+  if (!canViewOpen && !canViewPaid) return <div className="text-center py-20 text-slate-400">Acesso restrito a este modulo.</div>;
 
   return (
     <div className="max-w-7xl mx-auto">
       <header className="mb-8">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-          <h2 className="text-2xl sm:text-3xl font-black text-slate-800 tracking-tight uppercase">Itens Lançados</h2>
+          <h2 className="text-2xl sm:text-3xl font-black text-slate-800 tracking-tight uppercase">Itens Lancados</h2>
           <ExportButton
-            data={filtered.map(item => ({
+            data={(tab === 'abertos' ? filtered : currentLiquidados).map(item => ({
               'FDA': item.fdaNumber,
               'Filial': item.filialName,
               'Categoria': item.data.categoria || 'N/A',
-              'Serviço': item.data.servicos,
+              'Servico': item.data.servicos,
               'Cliente/Fornecedor': item.data.clienteFornecedor,
               'CNPJ/CPF': item.data.cnpjCpf || 'N/A',
               'Navio': item.data.navio || 'N/A',
@@ -1852,17 +1886,17 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
               'Vencimento': item.data.vencimento,
               'Valor Total': `R$ ${parseFloat(item.data.valorLiquido || 0).toFixed(2)}`,
               'Status': item.data.status,
+              'Conciliado': item.data.conciliado ? 'Sim' : 'Nao',
+              'Valor Conciliado': item.data.valorConciliado ? `R$ ${parseFloat(item.data.valorConciliado).toFixed(2)}` : 'N/A',
               'Centro Custo': item.data.centroCusto || 'N/A',
               'Data Provisionamento': item.data.dataProvisionamento || 'N/A',
-              'Data Aprovação': item.data.dataAprovacao || 'N/A',
+              'Data Aprovacao': item.data.dataAprovacao || 'N/A',
               'Data Pagamento': item.data.dataPagamentoReal || 'N/A'
             }))}
             filename={`itens-lancados-${tab}`}
             label="Exportar"
           />
         </div>
-
-        {/* Barra de Filtros */}
         <FilterBar
           search={search}
           onSearchChange={setSearch}
@@ -1874,85 +1908,159 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
         />
       </header>
 
-      <div className="flex gap-4 mb-6">
+      {/* Tabs principais */}
+      <div className="flex gap-4 mb-4">
         {canViewOpen && <button onClick={() => setTab('abertos')} className={`px-6 py-2 rounded-full font-black uppercase text-[10px] tracking-widest transition-all ${tab === 'abertos' ? 'bg-slate-800 text-white' : 'bg-white text-slate-400 border'}`}>Em Aberto</button>}
         {canViewPaid && <button onClick={() => setTab('liquidados')} className={`px-6 py-2 rounded-full font-black uppercase text-[10px] tracking-widest transition-all ${tab === 'liquidados' ? 'bg-green-600 text-white' : 'bg-white text-slate-400 border'}`}>Liquidados</button>}
       </div>
+
+      {/* Sub-tabs dos liquidados */}
+      {tab === 'liquidados' && (
+        <div className="flex gap-3 mb-6 bg-slate-50 p-2 rounded-xl border border-slate-200 w-fit">
+          <button
+            onClick={() => setLiquidadosSubTab('nao-conciliados')}
+            className={`px-5 py-2.5 rounded-lg font-black uppercase text-[10px] tracking-widest transition-all flex items-center gap-2 ${liquidadosSubTab === 'nao-conciliados' ? 'bg-amber-500 text-white shadow-md' : 'text-slate-500 hover:bg-white'
+              }`}
+          >
+            &#9203; Nao Conciliados
+            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${liquidadosSubTab === 'nao-conciliados' ? 'bg-amber-600 text-white' : 'bg-slate-200 text-slate-600'
+              }`}>{liquidadosNaoConciliados.length}</span>
+          </button>
+          <button
+            onClick={() => setLiquidadosSubTab('conciliados')}
+            className={`px-5 py-2.5 rounded-lg font-black uppercase text-[10px] tracking-widest transition-all flex items-center gap-2 ${liquidadosSubTab === 'conciliados' ? 'bg-red-600 text-white shadow-md' : 'text-slate-500 hover:bg-white'
+              }`}
+          >
+            &#10003; Conciliados
+            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${liquidadosSubTab === 'conciliados' ? 'bg-red-700 text-white' : 'bg-slate-200 text-slate-600'
+              }`}>{liquidadosConciliados.length}</span>
+          </button>
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <table className="w-full text-sm text-left">
           <thead className="bg-slate-50 border-b">
             <tr>
               <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-blue-600" onClick={() => setSortBy(sortBy === 'vencimento-asc' ? 'vencimento-desc' : 'vencimento-asc')}>
-                Vencimento {sortBy.includes('vencimento') && (sortBy.includes('asc') ? '↑' : '↓')}
+                Vencimento {sortBy.includes('vencimento') && (sortBy.includes('asc') ? '\u2191' : '\u2193')}
               </th>
               <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-blue-600" onClick={() => setSortBy(sortBy === 'categoria-asc' ? 'categoria-desc' : 'categoria-asc')}>
-                Categoria {sortBy.includes('categoria') && (sortBy.includes('asc') ? '↑' : '↓')}
+                Categoria {sortBy.includes('categoria') && (sortBy.includes('asc') ? '\u2191' : '\u2193')}
               </th>
               <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-blue-600" onClick={() => setSortBy(sortBy === 'servico-asc' ? 'servico-desc' : 'servico-asc')}>
-                Serviço / FDA {sortBy.includes('servico') && (sortBy.includes('asc') ? '↑' : '↓')}
+                Servico / FDA {sortBy.includes('servico') && (sortBy.includes('asc') ? '\u2191' : '\u2193')}
               </th>
               <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right cursor-pointer hover:text-blue-600" onClick={() => setSortBy(sortBy === 'valor-asc' ? 'valor-desc' : 'valor-asc')}>
-                Valor {sortBy.includes('valor') && (sortBy.includes('asc') ? '↑' : '↓')}
+                Valor {sortBy.includes('valor') && (sortBy.includes('asc') ? '\u2191' : '\u2193')}
               </th>
               <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th>
-              <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Ações</th>
+              <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Acoes</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50 font-medium">
-            {filtered.length === 0 ? (
+            {(tab === 'abertos' ? filtered : currentLiquidados).length === 0 ? (
               <tr>
-                <td colSpan="5" className="p-10 text-center text-slate-400 italic">Nenhum item encontrado com os filtros aplicados.</td>
+                <td colSpan="6" className="p-10 text-center text-slate-400 italic">Nenhum item encontrado com os filtros aplicados.</td>
               </tr>
             ) : (
-              filtered.map(i => (
-                <tr key={i.id} className="hover:bg-slate-50">
-                  <td className="p-5 font-bold text-slate-800">{i.data.vencimento ? new Date(i.data.vencimento.includes('T') ? i.data.vencimento : `${i.data.vencimento}T12:00:00`).toLocaleDateString('pt-BR') : 'Sem Data'}</td>
-                  <td className="p-5 font-black text-slate-600 uppercase text-xs">{i.data.categoria || '-'}</td>
-                  <td className="p-5">
-                    <div className="font-black text-slate-800 uppercase text-xs">{i.data.servicos}</div>
-                    <div className="text-[10px] text-blue-600 font-black mt-1">{i.fdaNumber}</div>
-                    <div className="text-[10px] text-slate-400 font-medium mt-1">{i.data.clienteFornecedor}</div>
-                  </td>
-                  <td className="p-5 text-right font-black text-slate-900">R$ {parseFloat(i.data.valorLiquido).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
-                  <td className="p-5 text-center"><StatusBadge status={i.data.status} /></td>
-                  <td className="p-5 text-center">
-                    <div className="flex items-center justify-center gap-2 flex-wrap">
-                      <div className="flex gap-1 mr-2">
-                        <button onClick={() => onPreview(i.anexosNF, "Nota Fiscal")} className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.anexosNF?.length > 0 ? 'text-blue-600 border-blue-200 hover:bg-blue-50' : 'text-slate-300 border-slate-100'}`} disabled={!i.anexosNF?.length}>Nota</button>
-                        <button onClick={() => onPreview(i.anexosBoleto, "Boleto")} className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.anexosBoleto?.length > 0 ? 'text-slate-600 border-slate-200 hover:bg-slate-50' : 'text-slate-300 border-slate-100'}`} disabled={!i.anexosBoleto?.length}>Boleto</button>
-                        {tab === 'liquidados' && (
-                          <button
-                            onClick={() => onPreview(i.comprovantes, "Comprovantes")}
-                            className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.comprovantes?.length > 0 ? 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100' : 'bg-slate-50 text-slate-300 border-slate-100'}`}
-                            disabled={!i.comprovantes?.length}
-                            title={i.comprovantes?.length ? `${i.comprovantes.length} comprovante(s)` : 'Sem comprovantes'}
-                          >🧾 Comp.</button>
+              (tab === 'abertos' ? filtered : currentLiquidados).map(i => {
+                const isConciliado = i.data.conciliado === true;
+                const diferenca = isConciliado
+                  ? parseFloat(i.data.valorConciliado || 0) - parseFloat(i.data.valorLiquido || 0)
+                  : null;
+                return (
+                  <tr key={i.id} className={`${isConciliado ? 'bg-red-50 border-l-4 border-red-400' : 'hover:bg-slate-50'} transition-colors`}>
+                    <td className="p-5 font-bold text-slate-800">{i.data.vencimento ? new Date(i.data.vencimento.includes('T') ? i.data.vencimento : `${i.data.vencimento}T12:00:00`).toLocaleDateString('pt-BR') : 'Sem Data'}</td>
+                    <td className="p-5 font-black text-slate-600 uppercase text-xs">{i.data.categoria || '-'}</td>
+                    <td className="p-5">
+                      <div className="font-black text-slate-800 uppercase text-xs">{i.data.servicos}</div>
+                      <div className="text-[10px] text-blue-600 font-black mt-1">{i.fdaNumber}</div>
+                      <div className="text-[10px] text-slate-400 font-medium mt-1">{i.data.clienteFornecedor}</div>
+                    </td>
+                    <td className="p-5 text-right">
+                      <span className="font-black text-slate-900 block">
+                        R$ {parseFloat(i.data.valorLiquido).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </span>
+                      {isConciliado && (
+                        <>
+                          <span className="text-[10px] text-emerald-700 font-bold block mt-1">
+                            Pago: R$ {parseFloat(i.data.valorConciliado).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </span>
+                          {Math.abs(diferenca) >= 0.01 && (
+                            <span className={`text-[10px] font-bold block ${diferenca > 0 ? 'text-amber-600' : 'text-red-600'}`}>
+                              Dif: {diferenca > 0 ? '+' : ''}R$ {diferenca.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </td>
+                    <td className="p-5 text-center">
+                      <div className="flex flex-col items-center gap-1">
+                        <StatusBadge status={i.data.status} />
+                        {isConciliado && (
+                          <span className="px-2 py-0.5 bg-red-600 text-white text-[8px] font-black uppercase tracking-widest rounded-full">
+                            &#10003; Conciliado
+                          </span>
                         )}
                       </div>
-                      {tab === 'liquidados' && (
-                        <button
-                          onClick={() => { setComprovanteModal({ item: i }); setComprovanteFile(null); }}
-                          className="flex items-center gap-1 px-3 py-1.5 text-[9px] uppercase font-black rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-sm"
-                          title="Anexar comprovante de pagamento"
-                        >
-                          <Paperclip size={11} /> Comprovante
-                        </button>
-                      )}
-                      <button onClick={() => onEdit(i)} className="p-2 text-slate-400 hover:text-blue-600" title="Editar"><Edit size={18} /></button>
-                      <button onClick={() => onDelete(i.id)} className="p-2 text-slate-400 hover:text-red-600" title="Excluir"><Trash2 size={18} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))
+                    </td>
+                    <td className="p-5 text-center">
+                      <div className="flex items-center justify-center gap-2 flex-wrap">
+                        <div className="flex gap-1 mr-1">
+                          <button onClick={() => onPreview(i.anexosNF, "Nota Fiscal")} className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.anexosNF?.length > 0 ? 'text-blue-600 border-blue-200 hover:bg-blue-50' : 'text-slate-300 border-slate-100'}`} disabled={!i.anexosNF?.length}>Nota</button>
+                          <button onClick={() => onPreview(i.anexosBoleto, "Boleto")} className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.anexosBoleto?.length > 0 ? 'text-slate-600 border-slate-200 hover:bg-slate-50' : 'text-slate-300 border-slate-100'}`} disabled={!i.anexosBoleto?.length}>Boleto</button>
+                          {tab === 'liquidados' && (
+                            <button
+                              onClick={() => onPreview(i.comprovantes, "Comprovantes")}
+                              className={`p-1 px-2 text-[9px] uppercase font-bold rounded border ${i.comprovantes?.length > 0 ? 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100' : 'bg-slate-50 text-slate-300 border-slate-100'}`}
+                              disabled={!i.comprovantes?.length}
+                              title={i.comprovantes?.length ? `${i.comprovantes.length} comprovante(s)` : 'Sem comprovantes'}
+                            >&#129534; Comp.</button>
+                          )}
+                        </div>
+                        {tab === 'liquidados' && liquidadosSubTab === 'nao-conciliados' && (
+                          <>
+                            <button
+                              onClick={() => { setComprovanteModal({ item: i }); setComprovanteFile(null); }}
+                              className="flex items-center gap-1 px-3 py-1.5 text-[9px] uppercase font-black rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-sm"
+                              title="Anexar comprovante de pagamento"
+                            >
+                              <Paperclip size={11} /> Comprovante
+                            </button>
+                            <button
+                              onClick={() => { setConciliacaoModal({ item: i }); setValorConciliado(''); }}
+                              disabled={!i.comprovantes?.length}
+                              className={`flex items-center gap-1 px-3 py-1.5 text-[9px] uppercase font-black rounded-lg transition-all shadow-sm ${i.comprovantes?.length
+                                ? 'bg-red-600 text-white hover:bg-red-700 cursor-pointer'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                }`}
+                              title={i.comprovantes?.length ? 'Conciliar item' : 'Anexe um comprovante antes de conciliar'}
+                            >
+                              &#10003; Conciliar
+                            </button>
+                          </>
+                        )}
+                        <button onClick={() => onEdit(i)} className="p-2 text-slate-400 hover:text-blue-600" title="Editar"><Edit size={18} /></button>
+                        <button onClick={() => onDelete(i.id)} className="p-2 text-slate-400 hover:text-red-600" title="Excluir"><Trash2 size={18} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
 
-      {/* Contador de Resultados */}
+      {/* Contador */}
       <div className="mt-4 text-center text-sm text-slate-500 font-medium">
-        Exibindo {filtered.length} de {allItems.filter(i => tab === 'abertos' ? i.data.status !== 'PAGO' : i.data.status === 'PAGO').length} itens
+        {tab === 'abertos'
+          ? `Exibindo ${filtered.length} de ${allItems.filter(i => i.data.status !== 'PAGO').length} itens`
+          : liquidadosSubTab === 'nao-conciliados'
+            ? `Exibindo ${liquidadosNaoConciliados.length} itens nao conciliados`
+            : `Exibindo ${liquidadosConciliados.length} itens conciliados`
+        }
       </div>
 
       {/* Modal de Anexar Comprovante */}
@@ -1964,59 +2072,39 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
                 <Paperclip size={16} className="text-emerald-600" />
                 Anexar Comprovante de Pagamento
               </h3>
-              <button onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }} className="p-2 hover:bg-emerald-100 rounded-lg">
-                <X size={18} />
-              </button>
+              <button onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }} className="p-2 hover:bg-emerald-100 rounded-lg"><X size={18} /></button>
             </div>
             <div className="p-6 space-y-4">
-              {/* Info do item */}
               <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Item</p>
                 <p className="font-black text-slate-800 text-sm uppercase">{comprovanteModal.item.data.servicos}</p>
-                <p className="text-xs text-slate-500 mt-1">{comprovanteModal.item.fdaNumber} • R$ {parseFloat(comprovanteModal.item.data.valorLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                <p className="text-xs text-slate-500 mt-1">{comprovanteModal.item.fdaNumber} &bull; R$ {parseFloat(comprovanteModal.item.data.valorLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
               </div>
-
-              {/* Comprovantes já anexados */}
               {comprovanteModal.item.comprovantes?.length > 0 && (
                 <div className="space-y-2">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Comprovantes já anexados ({comprovanteModal.item.comprovantes.length})</p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Comprovantes ja anexados ({comprovanteModal.item.comprovantes.length})</p>
                   {comprovanteModal.item.comprovantes.map((c, idx) => (
                     <div key={idx} className="flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
                       <FileText size={14} className="text-emerald-600 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-bold text-slate-700 truncate">{c.name}</p>
-                        <p className="text-[9px] text-slate-400">{c.date} • {c.size}</p>
+                        <p className="text-[9px] text-slate-400">{c.date} &bull; {c.size}</p>
                       </div>
-                      <button
-                        onClick={() => onPreview([c], 'Comprovante')}
-                        className="p-1 text-emerald-600 hover:bg-emerald-100 rounded"
-                        title="Visualizar"
-                      >
+                      <button onClick={() => onPreview([c], 'Comprovante')} className="p-1 text-emerald-600 hover:bg-emerald-100 rounded" title="Visualizar">
                         <Eye size={14} />
                       </button>
                     </div>
                   ))}
                 </div>
               )}
-
-              {/* Upload novo comprovante */}
               <div>
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Novo Comprovante</p>
-                <input
-                  ref={comprovanteInputRef}
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.xlsx"
-                  className="hidden"
-                  onChange={(e) => setComprovanteFile(e.target.files?.[0] || null)}
-                />
+                <input ref={comprovanteInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.xlsx" className="hidden" onChange={(e) => setComprovanteFile(e.target.files?.[0] || null)} />
                 {!comprovanteFile ? (
-                  <button
-                    onClick={() => comprovanteInputRef.current?.click()}
-                    className="w-full border-2 border-dashed border-emerald-300 rounded-xl py-8 flex flex-col items-center gap-2 hover:border-emerald-500 hover:bg-emerald-50 transition-all group"
-                  >
+                  <button onClick={() => comprovanteInputRef.current?.click()} className="w-full border-2 border-dashed border-emerald-300 rounded-xl py-8 flex flex-col items-center gap-2 hover:border-emerald-500 hover:bg-emerald-50 transition-all group">
                     <Paperclip size={24} className="text-emerald-400 group-hover:text-emerald-600" />
                     <p className="text-sm font-black text-emerald-600">Clique para selecionar arquivo</p>
-                    <p className="text-[10px] text-slate-400">PDF, PNG, JPG ou XLSX • Máx. 5MB</p>
+                    <p className="text-[10px] text-slate-400">PDF, PNG, JPG ou XLSX &bull; Max. 5MB</p>
                   </button>
                 ) : (
                   <div className="flex items-center gap-3 p-4 bg-emerald-50 border-2 border-emerald-300 rounded-xl">
@@ -2025,44 +2113,94 @@ const LaunchedModule = ({ allItems, onDelete, onEdit, onPreview, userPermissions
                       <p className="font-bold text-slate-700 text-sm truncate">{comprovanteFile.name}</p>
                       <p className="text-[10px] text-slate-400">{formatFileSize(comprovanteFile.size)}</p>
                     </div>
-                    <button
-                      onClick={() => setComprovanteFile(null)}
-                      className="p-1 text-slate-400 hover:text-red-500 rounded"
-                    >
-                      <X size={16} />
-                    </button>
+                    <button onClick={() => setComprovanteFile(null)} className="p-1 text-slate-400 hover:text-red-500 rounded"><X size={16} /></button>
                   </div>
                 )}
               </div>
-
-              {/* Banner de carregamento */}
               {comprovanteUploading && (
                 <div className="bg-emerald-50 border-2 border-emerald-200 rounded-xl p-4 animate-pulse">
                   <div className="flex items-center gap-3">
                     <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
-                    <p className="font-black text-emerald-800 text-sm uppercase tracking-wide">📤 Enviando comprovante...</p>
+                    <p className="font-black text-emerald-800 text-sm uppercase tracking-wide">Enviando comprovante...</p>
                   </div>
                 </div>
               )}
-
-              {/* Botões de ação */}
               <div className="flex gap-3 pt-2">
-                <button
-                  onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }}
-                  className="flex-1 py-3 border-2 border-slate-200 text-slate-600 font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-50 transition-all"
-                >
-                  Cancelar
+                <button onClick={() => { setComprovanteModal(null); setComprovanteFile(null); }} className="flex-1 py-3 border-2 border-slate-200 text-slate-600 font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-50 transition-all">Cancelar</button>
+                <button onClick={handleAnexarComprovante} disabled={!comprovanteFile || comprovanteUploading} className="flex-1 py-3 bg-emerald-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-emerald-700 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {comprovanteUploading ? (<><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Enviando...</>) : (<><Paperclip size={14} /> Anexar Comprovante</>)}
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Conciliacao */}
+      {conciliacaoModal && (
+        <div className="fixed inset-0 bg-slate-900/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b flex justify-between items-center bg-red-50">
+              <h3 className="font-black text-red-800 uppercase text-xs tracking-widest">&#10003; Conciliar Pagamento</h3>
+              <button onClick={() => { setConciliacaoModal(null); setValorConciliado(''); }} className="p-2 hover:bg-red-100 rounded-lg"><X size={18} /></button>
+            </div>
+            <div className="p-6 space-y-5">
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Item</p>
+                <p className="font-black text-slate-800 text-sm uppercase">{conciliacaoModal.item.data.servicos}</p>
+                <p className="text-xs text-slate-500 mt-1">{conciliacaoModal.item.fdaNumber} &bull; {conciliacaoModal.item.data.clienteFornecedor}</p>
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="flex-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Valor do Item</p>
+                    <p className="text-lg font-black text-slate-900">R$ {parseFloat(conciliacaoModal.item.data.valorLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Comprovantes</p>
+                    <p className="text-sm font-black text-emerald-600">{conciliacaoModal.item.comprovantes?.length || 0} anexado(s)</p>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                  Valor Pago Conforme Comprovante (R$)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={valorConciliado}
+                  onChange={e => setValorConciliado(e.target.value)}
+                  placeholder="0,00"
+                  className="w-full px-4 py-3 rounded-xl border-2 border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none text-xl font-black text-slate-900 text-center transition-all"
+                />
+                {valorConciliado && !isNaN(parseFloat(valorConciliado)) && (
+                  <div className={`mt-3 p-3 rounded-lg text-center font-black text-sm ${Math.abs(parseFloat(valorConciliado) - parseFloat(conciliacaoModal.item.data.valorLiquido || 0)) < 0.01
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'bg-amber-50 text-amber-700 border border-amber-200'
+                    }`}>
+                    {Math.abs(parseFloat(valorConciliado) - parseFloat(conciliacaoModal.item.data.valorLiquido || 0)) < 0.01
+                      ? '&#10003; Valor confere com o lancamento'
+                      : `&#9888; Diferenca: R$ ${(parseFloat(valorConciliado) - parseFloat(conciliacaoModal.item.data.valorLiquido || 0)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+                    }
+                  </div>
+                )}
+              </div>
+              {conciliando && (
+                <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 animate-pulse">
+                  <div className="flex items-center gap-3">
+                    <div className="w-5 h-5 border-2 border-red-600 border-t-transparent rounded-full animate-spin"></div>
+                    <p className="font-black text-red-800 text-sm uppercase tracking-wide">Conciliando item...</p>
+                  </div>
+                </div>
+              )}
+              <div className="flex gap-3 pt-1">
+                <button onClick={() => { setConciliacaoModal(null); setValorConciliado(''); }} className="flex-1 py-3 border-2 border-slate-200 text-slate-600 font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-50 transition-all">Cancelar</button>
                 <button
-                  onClick={handleAnexarComprovante}
-                  disabled={!comprovanteFile || comprovanteUploading}
-                  className="flex-1 py-3 bg-emerald-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-emerald-700 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  onClick={handleConciliar}
+                  disabled={!valorConciliado || conciliando || parseFloat(valorConciliado) <= 0}
+                  className="flex-1 py-3 bg-red-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-red-700 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  {comprovanteUploading ? (
-                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Enviando...</>
-                  ) : (
-                    <><Paperclip size={14} /> Anexar Comprovante</>
-                  )}
+                  {conciliando ? (<><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Conciliando...</>) : '&#10003; Confirmar Conciliacao'}
                 </button>
               </div>
             </div>
@@ -2383,14 +2521,16 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <button
-                    onClick={approveSelected}
-                    disabled={selectedItems.length === 0}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-green-700 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <CheckCircle2 size={18} />
-                    Aprovar Selecionados
-                  </button>
+                  {userPermissions.includes('finance_btn_approve') && (
+                    <button
+                      onClick={approveSelected}
+                      disabled={selectedItems.length === 0}
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-green-700 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <CheckCircle2 size={18} />
+                      Aprovar Selecionados
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setSelectionMode(false);
@@ -2487,9 +2627,15 @@ const FinanceModule = ({ allItems, isMaster, updateItem, onDelete, onPreview, us
                             <button onClick={() => handleStatus(it.id, it.data, steps[aT].prev)} className="p-2 text-slate-400 hover:text-orange-500 transition-colors" title="Retornar Status"><Undo2 size={18} /></button>
                           )}
                           {steps[aT].next && !selectionMode && (
-                            <button onClick={() => handleStatus(it.id, it.data, steps[aT].next)} className={`px-3 sm:px-4 py-2 ${steps[aT].color} text-white rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest shadow-md hover:opacity-90 transition-all whitespace-nowrap`}>
-                              {steps[aT].btn}
-                            </button>
+                            <>
+                              {((aT === 'PENDENTE' && userPermissions.includes('finance_btn_provision')) ||
+                                (aT === 'PROVISIONADO' && userPermissions.includes('finance_btn_approve')) ||
+                                (aT === 'APROVADO' && userPermissions.includes('finance_btn_liquidate'))) && (
+                                  <button onClick={() => handleStatus(it.id, it.data, steps[aT].next)} className={`px-3 sm:px-4 py-2 ${steps[aT].color} text-white rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest shadow-md hover:opacity-90 transition-all whitespace-nowrap`}>
+                                    {steps[aT].btn}
+                                  </button>
+                                )}
+                            </>
                           )}
                         </div>
                       </td>
@@ -2797,25 +2943,79 @@ const FiliaisModule = ({ filiais, userEmail, refreshData }) => {
 const UserManagementModule = ({ usersList, filiais, refreshData }) => {
   const [newUserEmail, setNewUserEmail] = useState('');
 
-  const permissions = [
-    { id: 'entry', label: 'Módulo: Lançamento', category: 'module' },
-    { id: 'launched', label: 'Módulo: Itens Lançados', category: 'module' },
-    { id: 'launched_open', label: 'Aba: Em Aberto', category: 'tab' },
-    { id: 'launched_paid', label: 'Aba: Liquidados', category: 'tab' },
-    { id: 'finance', label: 'Módulo: Contas a Pagar', category: 'module' },
-    { id: 'finance_pending', label: 'Aba: A Pagar', category: 'tab' },
-    { id: 'finance_provision', label: 'Aba: Provisionado', category: 'tab' },
-    { id: 'finance_approved', label: 'Aba: Aprovado', category: 'tab' },
-    { id: 'finance_paid', label: 'Aba: Liquidados', category: 'tab' },
-    { id: 'logs', label: 'Módulo: Logs', category: 'module' }
+  // Structure permissions into logical groups for better UX
+  const permissionGroups = [
+    {
+      id: 'lancamento',
+      label: 'Lançamento',
+      icon: '📁',
+      color: 'blue',
+      borderColor: 'border-blue-200',
+      bgColor: 'bg-blue-50/40',
+      headerBg: 'bg-blue-600',
+      items: [
+        { id: 'entry', label: 'Acesso ao Módulo', type: 'module', description: 'Permite criar e gerenciar FDAs e lançamentos.' }
+      ]
+    },
+    {
+      id: 'itens_lancados',
+      label: 'Itens Lançados',
+      icon: '📄',
+      color: 'indigo',
+      borderColor: 'border-indigo-200',
+      bgColor: 'bg-indigo-50/40',
+      headerBg: 'bg-indigo-600',
+      items: [
+        { id: 'launched', label: 'Acesso ao Módulo', type: 'module', description: 'Visualiza itens lançados.' },
+        { id: 'launched_open', label: 'Aba: Em Aberto', type: 'tab', description: 'Visualiza itens em aberto.' },
+        { id: 'launched_paid', label: 'Aba: Liquidados', type: 'tab', description: 'Visualiza itens liquidados.' },
+      ]
+    },
+    {
+      id: 'contas_pagar',
+      label: 'Contas a Pagar',
+      icon: '💰',
+      color: 'emerald',
+      borderColor: 'border-emerald-200',
+      bgColor: 'bg-emerald-50/40',
+      headerBg: 'bg-emerald-600',
+      items: [
+        { id: 'finance', label: 'Acesso ao Módulo', type: 'module', description: 'Visualiza o módulo de contas a pagar.' },
+        { id: 'finance_pending', label: 'Aba: A Pagar', type: 'tab', description: 'Visualiza itens pendentes.' },
+        { id: 'finance_provision', label: 'Aba: Provisionado', type: 'tab', description: 'Visualiza itens provisionados.' },
+        { id: 'finance_approved', label: 'Aba: Aprovado', type: 'tab', description: 'Visualiza itens aprovados.' },
+        { id: 'finance_paid', label: 'Aba: Liquidados', type: 'tab', description: 'Visualiza itens pagos.' },
+        { id: 'finance_btn_provision', label: 'Ação: Provisionar', type: 'action', description: 'Pode clicar em Provisionar.' },
+        { id: 'finance_btn_approve', label: 'Ação: Aprovar', type: 'action', description: 'Pode clicar em Aprovar.' },
+        { id: 'finance_btn_liquidate', label: 'Ação: Liquidar', type: 'action', description: 'Pode clicar em Liquidar.' },
+      ]
+    },
+    {
+      id: 'logs',
+      label: 'Logs do Sistema',
+      icon: '📋',
+      color: 'slate',
+      borderColor: 'border-slate-200',
+      bgColor: 'bg-slate-50/40',
+      headerBg: 'bg-slate-600',
+      items: [
+        { id: 'logs', label: 'Acesso ao Módulo', type: 'module', description: 'Visualiza o histórico de ações do sistema.' }
+      ]
+    }
   ];
+
+  // Badge style by type
+  const typeBadge = {
+    module: { label: 'Módulo', cls: 'bg-slate-100 text-slate-600' },
+    tab: { label: 'Aba', cls: 'bg-blue-100 text-blue-700' },
+    action: { label: 'Ação', cls: 'bg-orange-100 text-orange-700' },
+  };
 
   const addUser = async () => {
     if (!newUserEmail || !newUserEmail.includes('@')) {
       alert('Digite um e-mail válido');
       return;
     }
-
     try {
       await fetch(`${API_URL}/permissions`, {
         method: 'POST',
@@ -2834,22 +3034,17 @@ const UserManagementModule = ({ usersList, filiais, refreshData }) => {
   const handleUpdate = async (email, moduleId, isChecked) => {
     const user = usersList.find(u => u.email === email);
     if (!user) return;
-
     const currentModules = user.modules || [];
-    const newModules = isChecked
-      ? [...currentModules, moduleId]
-      : currentModules.filter(m => m !== moduleId);
-
+    const newModules = isChecked ? [...currentModules, moduleId] : currentModules.filter(m => m !== moduleId);
     try {
       await fetch(`${API_URL}/permissions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, modules: newModules, filiais: user.filiais || [] })
+        body: JSON.stringify({ email, modules: newModules, filiais: user.filiais || [] })
       });
       await logAction(MASTER_USER, 'ATUALIZAR PERMISSÃO', `Permissões de ${email} atualizadas`);
       refreshData();
     } catch (error) {
-      console.error('Erro ao atualizar permissões:', error);
       alert('Erro ao atualizar permissões');
     }
   };
@@ -2857,63 +3052,72 @@ const UserManagementModule = ({ usersList, filiais, refreshData }) => {
   const handleFilialUpdate = async (email, filialId, isChecked) => {
     const user = usersList.find(u => u.email === email);
     if (!user) return;
-
     const currentFiliais = user.filiais || [];
-    const newFiliais = isChecked
-      ? [...currentFiliais, filialId]
-      : currentFiliais.filter(f => f !== filialId);
-
+    const newFiliais = isChecked ? [...currentFiliais, filialId] : currentFiliais.filter(f => f !== filialId);
     try {
       await fetch(`${API_URL}/permissions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, modules: user.modules || [], filiais: newFiliais })
+        body: JSON.stringify({ email, modules: user.modules || [], filiais: newFiliais })
       });
       await logAction(MASTER_USER, 'ATUALIZAR FILIAIS', `Filiais de ${email} atualizadas`);
       refreshData();
     } catch (error) {
-      console.error('Erro ao atualizar filiais:', error);
       alert('Erro ao atualizar filiais');
     }
   };
 
   const deleteUser = async (email) => {
-    if (email === MASTER_USER) {
-      alert('Não é possível remover o usuário master');
-      return;
-    }
-
+    if (email === MASTER_USER) { alert('Não é possível remover o usuário master'); return; }
     if (!window.confirm(`Tem certeza que deseja remover ${email}?`)) return;
-
     try {
       await fetch(`${API_URL}/permissions/${email}`, { method: 'DELETE' });
       await logAction(MASTER_USER, 'REMOVER USUÁRIO', `Usuário ${email} removido`);
       refreshData();
     } catch (error) {
-      console.error('Erro ao remover usuário:', error);
       alert('Erro ao remover usuário');
     }
   };
 
+  // Toggle Switch Component
+  const Toggle = ({ checked, onChange, disabled }) => (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => !disabled && onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+        } ${checked ? 'bg-blue-600' : 'bg-slate-200'}`}
+    >
+      <span
+        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${checked ? 'translate-x-4' : 'translate-x-0'
+          }`}
+      />
+    </button>
+  );
+
   return (
     <div className="max-w-6xl mx-auto">
+      {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-        <h2 className="text-2xl sm:text-3xl font-black text-slate-800 tracking-tight uppercase">Gerenciar Usuários</h2>
+        <div>
+          <h2 className="text-2xl sm:text-3xl font-black text-slate-800 tracking-tight uppercase">Gerenciar Usuários</h2>
+          <p className="text-sm text-slate-400 mt-1 font-medium">{usersList.length} usuário{usersList.length !== 1 ? 's' : ''} cadastrado{usersList.length !== 1 ? 's' : ''}</p>
+        </div>
         <ExportButton
           data={[...usersList].sort((a, b) => (a.email || '').localeCompare(b.email || '')).map(u => ({
             'E-mail': u.email,
             'Módulos': (u.modules || []).join(', '),
             'Filiais': (u.filiais || []).map(fId => filiais.find(f => f.id === fId)?.nome).filter(Boolean).join(', ') || 'Nenhuma',
-            'Criado em': u.createdAt ? new Date(u.createdAt).toLocaleDateString('pt-BR') : 'N/A'
           }))}
           filename="usuarios"
           label="Exportar"
         />
       </div>
 
-      {/* Adicionar Novo Usuário */}
-      <div className="bg-white p-4 sm:p-8 rounded-2xl shadow-sm border border-slate-200 mb-8">
-        <div className="flex flex-col sm:flex-row gap-4">
+      {/* Add User */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-8">
+        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Adicionar Novo Usuário</p>
+        <div className="flex flex-col sm:flex-row gap-3">
           <input
             type="email"
             placeholder="nome@empresa.com"
@@ -2924,99 +3128,130 @@ const UserManagementModule = ({ usersList, filiais, refreshData }) => {
           />
           <button
             onClick={addUser}
-            className="bg-blue-600 text-white px-8 py-3 rounded-xl font-black uppercase text-xs hover:bg-blue-700 transition-all whitespace-nowrap"
+            className="bg-blue-600 text-white px-8 py-3 rounded-xl font-black uppercase text-xs hover:bg-blue-700 transition-all whitespace-nowrap flex items-center gap-2 justify-center shadow-md"
           >
-            Autorizar
+            <Plus size={14} /> Autorizar Acesso
           </button>
         </div>
       </div>
 
-      {/* Lista de Usuários */}
+      {/* User List */}
       <div className="grid gap-6">
-        {[...usersList].sort((a, b) => (a.email || '').localeCompare(b.email || '')).map(user => (
-          <div key={user.email} className="bg-white rounded-2xl border border-slate-200 p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                <UserCog size={18} className="text-blue-600" />
-                {user.email}
-                {user.email === MASTER_USER && (
-                  <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-black uppercase">Master</span>
-                )}
-              </h3>
-              {user.email !== MASTER_USER && (
-                <button
-                  onClick={() => deleteUser(user.email)}
-                  className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                  title="Remover usuário"
-                >
-                  <Trash2 size={18} />
-                </button>
-              )}
-            </div>
+        {[...usersList].sort((a, b) => (a.email || '').localeCompare(b.email || '')).map(user => {
+          const isMasterUser = user.email === MASTER_USER;
+          const activeModuleCount = (user.modules || []).length;
+          const activeFilialCount = (user.filiais || []).length;
 
-            {/* Permissões - Módulos */}
-            <div className="mb-6">
-              <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Módulos de Acesso</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {permissions.filter(p => p.category === 'module').map(perm => (
-                  <label key={perm.id} className="flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer hover:bg-slate-50 p-3 rounded-lg border border-slate-200">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
-                      checked={user.modules?.includes(perm.id)}
-                      onChange={(e) => handleUpdate(user.email, perm.id, e.target.checked)}
-                      disabled={user.email === MASTER_USER}
-                    />
-                    {perm.label}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Permissões - Abas */}
-            <div className="mb-6">
-              <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Abas Específicas</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {permissions.filter(p => p.category === 'tab').map(perm => (
-                  <label key={perm.id} className="flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer hover:bg-blue-50 p-3 rounded-lg border border-blue-200 bg-blue-50/30">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
-                      checked={user.modules?.includes(perm.id)}
-                      onChange={(e) => handleUpdate(user.email, perm.id, e.target.checked)}
-                      disabled={user.email === MASTER_USER}
-                    />
-                    {perm.label}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Filiais */}
-            <div>
-              <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Filiais Autorizadas</h4>
-              {filiais.length === 0 ? (
-                <p className="text-sm text-slate-400 italic">Nenhuma filial cadastrada. Cadastre filiais primeiro.</p>
-              ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {filiais.map(filial => (
-                    <label key={filial.id} className="flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer hover:bg-slate-50 p-2 rounded">
-                      <input
-                        type="checkbox"
-                        className="w-4 h-4 text-green-600 rounded border-gray-300 focus:ring-green-500"
-                        checked={user.filiais?.includes(filial.id)}
-                        onChange={(e) => handleFilialUpdate(user.email, filial.id, e.target.checked)}
-                        disabled={user.email === MASTER_USER}
-                      />
-                      {filial.nome}
-                    </label>
-                  ))}
+          return (
+            <div key={user.email} className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+              {/* User Card Header */}
+              <div className="flex items-center justify-between p-5 border-b border-slate-100 bg-slate-50">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm shadow-sm ${isMasterUser ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                    {user.email.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-800 text-sm">{user.email}</span>
+                      {isMasterUser && (
+                        <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-[9px] font-black uppercase tracking-widest">Master</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 mt-0.5">
+                      <span className="text-[10px] text-slate-400 font-medium">{activeModuleCount} permissão{activeModuleCount !== 1 ? 'ões' : ''}</span>
+                      <span className="text-slate-200">•</span>
+                      <span className="text-[10px] text-slate-400 font-medium">{activeFilialCount === 0 ? 'Todas as filiais' : `${activeFilialCount} filial${activeFilialCount !== 1 ? 'is' : ''}`}</span>
+                    </div>
+                  </div>
                 </div>
-              )}
+                {!isMasterUser && (
+                  <button
+                    onClick={() => deleteUser(user.email)}
+                    className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Remover usuário"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
+
+              {/* Permissions Body */}
+              <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {permissionGroups.map(group => (
+                  <div key={group.id} className={`rounded-xl border ${group.borderColor} overflow-hidden`}>
+                    {/* Group Header */}
+                    <div className={`${group.headerBg} px-4 py-2.5 flex items-center gap-2`}>
+                      <span className="text-base">{group.icon}</span>
+                      <span className="text-xs font-black text-white uppercase tracking-wider">{group.label}</span>
+                    </div>
+                    {/* Permission Items */}
+                    <div className={`divide-y divide-slate-100 ${group.bgColor}`}>
+                      {group.items.map(item => {
+                        const isChecked = isMasterUser || (user.modules?.includes(item.id) ?? false);
+                        const badge = typeBadge[item.type];
+                        return (
+                          <div key={item.id} className="flex items-center justify-between px-4 py-3 gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs font-bold text-slate-700">{item.label}</span>
+                                <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded-full ${badge.cls}`}>{badge.label}</span>
+                              </div>
+                              <p className="text-[10px] text-slate-400 mt-0.5 truncate">{item.description}</p>
+                            </div>
+                            <Toggle
+                              checked={isChecked}
+                              onChange={(val) => handleUpdate(user.email, item.id, val)}
+                              disabled={isMasterUser}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Filiais Card */}
+                <div className="rounded-xl border border-green-200 overflow-hidden lg:col-span-2">
+                  <div className="bg-green-600 px-4 py-2.5 flex items-center gap-2">
+                    <span className="text-base">🏢</span>
+                    <span className="text-xs font-black text-white uppercase tracking-wider">Filiais Autorizadas</span>
+                    <span className="ml-auto text-[10px] text-green-100 font-medium">
+                      {isMasterUser ? 'Todas' : `${(user.filiais || []).length} de ${filiais.length} selecionada${filiais.length !== 1 ? 's' : ''}`}
+                    </span>
+                  </div>
+                  <div className="bg-green-50/40 p-4">
+                    {filiais.length === 0 ? (
+                      <p className="text-sm text-slate-400 italic text-center py-2">Nenhuma filial cadastrada.</p>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                        {filiais.map(filial => {
+                          const isFilialChecked = isMasterUser || (user.filiais?.includes(filial.id) ?? false);
+                          return (
+                            <label key={filial.id} className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer transition-all ${isFilialChecked
+                                ? 'bg-green-100 border-green-300 text-green-800'
+                                : 'bg-white border-slate-200 text-slate-500 hover:border-green-200'
+                              } ${isMasterUser ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 text-green-600 rounded border-gray-300 focus:ring-green-500"
+                                checked={isFilialChecked}
+                                onChange={(e) => handleFilialUpdate(user.email, filial.id, e.target.checked)}
+                                disabled={isMasterUser}
+                              />
+                              <span className="text-xs font-bold truncate">{filial.nome}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 };
+
